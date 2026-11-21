@@ -46,12 +46,16 @@ jobs:
             git pull --rebase -q || true
             git push || true
           fi
-          mkdir -p ~/.android
-          cp .github/debug.keystore ~/.android/debug.keystore
       - name: Build
         if: steps.z.outputs.name != ''
-        run: gradle assembleDebug --no-daemon
         working-directory: ${{ steps.z.outputs.dir }}
+        run: |
+          F=""
+          if ! grep -rqs signingConfigs --include='*.gradle*' .; then
+            K="$GITHUB_WORKSPACE/.github/debug.keystore"
+            F="-Pandroid.injected.signing.store.file=$K -Pandroid.injected.signing.store.password=android -Pandroid.injected.signing.key.alias=androiddebugkey -Pandroid.injected.signing.key.password=android"
+          fi
+          gradle assembleDebug --no-daemon $F
       - name: Publish APK
         if: steps.z.outputs.name != ''
         env:
