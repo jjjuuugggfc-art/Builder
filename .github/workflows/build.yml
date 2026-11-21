@@ -1,0 +1,64 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find zip
+        id: z
+        run: |
+          set +o pipefail
+          Z=$(git -c core.quotepath=off diff --name-only --diff-filter=AM HEAD~1 HEAD -- '*.zip' 2>/dev/null | head -1)
+          [ -z "$Z" ] && Z=$(git -c core.quotepath=off log --format= --name-only --diff-filter=AM -- '*.zip' | head -1)
+          if [ -z "$Z" ]; then echo "No zip yet"; exit 0; fi
+          N=$(basename "$Z" .zip | sed -E 's/ ?\([0-9]+\)$//; s/[^A-Za-z0-9_-]/_/g')
+          echo "Archive: $Z -> $N"
+          unzip -q -o "$Z" -d /tmp/p
+          S=$(find /tmp/p -maxdepth 4 -name 'settings.gradle*' | head -1)
+          if [ -z "$S" ]; then echo "No settings.gradle in $Z"; exit 1; fi
+          echo "name=$N" >> $GITHUB_OUTPUT
+          echo "dir=$(dirname "$S")" >> $GITHUB_OUTPUT
+      - uses: actions/setup-java@v4
+        if: steps.z.outputs.name != ''
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.z.outputs.name != ''
+        with:
+          gradle-version: '8.7'
+      - name: Signing key
+        if: steps.z.outputs.name != ''
+        run: |
+          if [ ! -f .github/debug.keystore ]; then
+            keytool -genkeypair -keystore .github/debug.keystore -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+            git config user.name builder-bot
+            git config user.email builder-bot@users.noreply.github.com
+            git add .github/debug.keystore
+            git commit -m "Signing key"
+            git pull --rebase -q || true
+            git push || true
+          fi
+          mkdir -p ~/.android
+          cp .github/debug.keystore ~/.android/debug.keystore
+      - name: Build
+        if: steps.z.outputs.name != ''
+        run: gradle assembleDebug --no-daemon
+        working-directory: ${{ steps.z.outputs.dir }}
+      - name: Publish APK
+        if: steps.z.outputs.name != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ steps.z.outputs.name }}
+        run: |
+          A=$(find /tmp/p -path '*outputs/apk/debug/*.apk' | head -1)
+          cp "$A" "$N.apk"
+          gh release delete "app-$N" -y --cleanup-tag || true
+          gh release create "app-$N" "$N.apk" -t "$N" -n "APK: $N"
